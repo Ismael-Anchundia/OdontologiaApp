@@ -27,6 +27,12 @@ CREATE TABLE IF NOT EXISTS dental_chairs (
 );
 INSERT INTO dental_chairs (name) VALUES ('Sillón 1'), ('Sillón 2'), ('Sillón 3') ON CONFLICT (name) DO NOTHING;
 
+-- timestamptz + interval es STABLE; con minutos el resultado no depende de la zona horaria, por eso es seguro marcarlo IMMUTABLE.
+CREATE OR REPLACE FUNCTION dental_appointment_range(starts_at TIMESTAMPTZ, duration_minutes INTEGER)
+RETURNS TSTZRANGE LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+    SELECT tstzrange(starts_at, starts_at + make_interval(mins => duration_minutes), '[)')
+$$;
+
 CREATE TABLE IF NOT EXISTS dental_appointments (
     id BIGSERIAL PRIMARY KEY,
     patient_id INTEGER NOT NULL REFERENCES dental_patients(id),
@@ -42,7 +48,7 @@ CREATE TABLE IF NOT EXISTS dental_appointments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     EXCLUDE USING gist (
         chair_id WITH =,
-        tstzrange(starts_at, starts_at + duration_minutes * INTERVAL '1 minute', '[)') WITH &&
+        dental_appointment_range(starts_at, duration_minutes) WITH &&
     ) WHERE (status NOT IN ('Cancelada','No asistió'))
 );
 CREATE INDEX IF NOT EXISTS idx_dental_appointments_start ON dental_appointments(starts_at);

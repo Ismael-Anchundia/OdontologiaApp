@@ -1,0 +1,492 @@
+openapi: 3.0.3
+info:
+  title: Dentalia API
+  version: 1.1.0
+  description: API clínica dental. Los endpoints dentales requieren JWT Bearer y un perfil clínico activo.
+servers:
+  - url: /api
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      security: []
+      summary: Estado del servidor, PostgreSQL y Redis
+      description: Devuelve 503 "degraded" solo si PostgreSQL no responde; Redis (módulos heredados) se informa sin afectar el estado.
+      responses:
+        '200': { description: API y PostgreSQL disponibles }
+        '503': { description: PostgreSQL no disponible }
+  /login:
+    post:
+      security: []
+      summary: Iniciar sesión y obtener JWT (HS256, 2 h por defecto)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Sesión iniciada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  email: { type: string }
+                  rol: { type: string, description: Rol heredado (admin/cliente); el acceso clínico depende del perfil dental }
+                  referido_id: { type: integer, nullable: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { description: Credenciales incorrectas }
+  /dental/me:
+    get:
+      summary: Perfil dental de la sesión (todos los perfiles)
+      responses:
+        '200':
+          description: Perfil actual
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId: { type: integer }
+                  email: { type: string }
+                  role: { $ref: '#/components/schemas/DentalRole' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /dental/staff:
+    get:
+      summary: Listar cuentas y perfiles dentales (admin)
+      responses:
+        '200': { description: Personal clínico (userId, email, name, role, active) }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /dental/staff/{id}/role:
+    put:
+      summary: Asignar o desactivar perfil dental (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { $ref: '#/components/schemas/DentalRole' }
+                active: { type: boolean, default: true }
+      responses:
+        '200': { description: Perfil actualizado }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: No se puede desactivar el último administrador clínico }
+  /dental/patients:
+    get:
+      summary: Listar y buscar pacientes (admin, receptionist, dentist, assistant)
+      parameters:
+        - { name: q, in: query, description: Nombre, identificación o código, schema: { type: string } }
+      responses:
+        '200':
+          description: Pacientes activos (máx. 500)
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Patient' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      summary: Crear paciente con historia médica (admin, receptionist, dentist)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PatientInput' }
+      responses:
+        '201':
+          description: Paciente creado con código P-0000
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Patient' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { description: Ya existe un paciente con esa identificación }
+  /dental/patients/{patientId}:
+    put:
+      summary: Actualizar ficha de paciente (admin, receptionist, dentist)
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PatientInput' }
+      responses:
+        '200': { description: Ficha actualizada }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Identificación duplicada }
+  /dental/appointments:
+    get:
+      summary: Consultar agenda por fecha o rango (admin, receptionist, dentist, assistant)
+      description: Usa `date`, o `from` y `to` juntos (máx. 32 días). Sin filtros devuelve hasta 1000 citas. Fechas en hora de Ecuador.
+      parameters:
+        - { name: date, in: query, schema: { type: string, format: date } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: Citas
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Appointment' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      summary: Crear cita y encolar confirmación y recordatorios (admin, receptionist, dentist)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patientId, date, time, chair, procedure]
+              properties:
+                patientId: { type: string, example: P-0001 }
+                date: { type: string, format: date }
+                time: { type: string, example: '09:30', description: Hora local America/Guayaquil }
+                chair: { type: string, example: Sillón 1 }
+                procedure: { type: string }
+                doctor: { type: string, description: Nombre del profesional (texto) }
+                durationMinutes: { type: integer, minimum: 5, maximum: 480, default: 30 }
+      responses:
+        '201':
+          description: Cita creada en estado Confirmada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Appointment' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { description: Paciente no encontrado }
+        '409': { description: El sillón ya tiene una cita que se solapa }
+  /dental/appointments/{id}/status:
+    patch:
+      summary: Cambiar estado de cita (admin, receptionist, dentist, assistant)
+      description: Cancelada o No asistió cancelan las notificaciones pendientes y liberan el sillón.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/AppointmentStatus' }
+      responses:
+        '200': { description: Estado actualizado }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Reactivar la cita produciría un solapamiento }
+  /dental/patients/{patientId}/notes:
+    get:
+      summary: Listar notas SOEP (admin, dentist, assistant)
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      responses:
+        '200': { description: Notas clínicas en orden cronológico }
+    post:
+      summary: Registrar nota SOEP inmutable (admin, dentist, assistant)
+      description: No existe edición ni borrado; PostgreSQL rechaza UPDATE/DELETE sobre las notas.
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Al menos un campo con contenido
+              properties:
+                subjective: { type: string }
+                objective: { type: string }
+                assessment: { type: string }
+                plan: { type: string }
+      responses:
+        '201': { description: Nota creada }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /dental/patients/{patientId}/odontogram:
+    get:
+      summary: Leer hallazgos vigentes del odontograma FDI (admin, dentist, assistant)
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      responses:
+        '200':
+          description: Hallazgos por pieza y superficie
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Finding' } }
+    put:
+      summary: Crear o reemplazar hallazgo (admin, dentist, assistant)
+      description: Un hallazgo por pieza y superficie; el tipo "Sano" elimina el hallazgo vigente.
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Finding' }
+      responses:
+        '200': { description: Hallazgo guardado }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /dental/patients/{patientId}/periodontogram:
+    get:
+      summary: Última medición por pieza y sitio (admin, dentist, assistant)
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      responses:
+        '200':
+          description: Mediciones vigentes
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/PerioMeasurement' } }
+    post:
+      summary: Registrar una medición de un sitio (admin, dentist, assistant)
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PerioMeasurement' }
+      responses:
+        '201': { description: Medición guardada con NIC calculado }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /dental/patients/{patientId}/periodontogram/bulk:
+    post:
+      summary: Guardar los seis sitios de una pieza (admin, dentist, assistant)
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 6
+              maxItems: 6
+              description: Misma pieza, sitios MB, B, DB, ML, L, DL sin repetir
+              items: { $ref: '#/components/schemas/PerioMeasurement' }
+      responses:
+        '201': { description: Mediciones guardadas }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /dental/inventory:
+    get:
+      summary: Consultar existencias (admin, assistant, auditor)
+      responses:
+        '200':
+          description: Insumos activos
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Supply' } }
+    post:
+      summary: Registrar insumo (admin, assistant)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                category: { type: string, default: Materiales }
+                unit: { type: string, default: unidades }
+                quantity: { type: number, description: Existencia inicial; genera movimiento en el kardex }
+                minimum: { type: number }
+      responses:
+        '201': { description: Insumo creado con SKU MAT-0000 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /dental/inventory/{id}:
+    patch:
+      summary: Ajustar existencias y registrar movimiento (admin, assistant)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [delta]
+              properties:
+                delta: { type: number, description: Distinto de cero; negativo para consumo }
+                reason: { type: string, default: Ajuste manual }
+      responses:
+        '200': { description: Existencia ajustada (id, quantity) }
+        '400': { description: Ajuste cero o que dejaría existencias negativas }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /dental/treatment-plans:
+    get:
+      summary: Listar planes de tratamiento (admin, dentist, receptionist)
+      responses:
+        '200':
+          description: Planes con sus ítems
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/TreatmentPlan' } }
+    post:
+      summary: Crear presupuesto por procedimientos y fases (admin, dentist)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patientId, title, items]
+              properties:
+                patientId: { type: string }
+                title: { type: string }
+                items: { type: array, minItems: 1, items: { $ref: '#/components/schemas/TreatmentItem' } }
+      responses:
+        '201': { description: Plan creado en estado Pendiente con total calculado }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { description: Paciente no encontrado }
+  /dental/treatment-plans/{id}/status:
+    patch:
+      summary: Cambiar estado general del presupuesto (admin, dentist, receptionist)
+      description: No hay aprobación por ítem.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [Pendiente, Aprobado, 'En progreso', Completado, Cancelado] }
+      responses:
+        '200': { description: Estado actualizado }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    PatientId:
+      name: patientId
+      in: path
+      required: true
+      description: Código del paciente (P-0001)
+      schema: { type: string }
+  schemas:
+    DentalRole:
+      type: string
+      enum: [admin, receptionist, dentist, assistant, auditor]
+    AppointmentStatus:
+      type: string
+      enum: [Programada, Confirmada, 'En espera', 'En atención', Atendida, Cancelada, 'No asistió']
+    PatientInput:
+      type: object
+      required: [name, document, medicalHistory]
+      properties:
+        name: { type: string, maxLength: 255 }
+        document: { type: string, maxLength: 32 }
+        phone: { type: string }
+        email: { type: string, format: email }
+        birth: { type: string, format: date }
+        emergencyContact: { type: string }
+        guardianName: { type: string }
+        insurance: { type: string }
+        alert: { type: string }
+        medicalHistory: { type: string }
+    Patient:
+      allOf:
+        - $ref: '#/components/schemas/PatientInput'
+        - type: object
+          properties:
+            id: { type: string, example: P-0001 }
+            lastVisit: { type: string }
+    Appointment:
+      type: object
+      properties:
+        id: { type: integer }
+        date: { type: string, format: date }
+        time: { type: string }
+        patientId: { type: string }
+        procedure: { type: string }
+        doctor: { type: string }
+        chair: { type: string }
+        status: { $ref: '#/components/schemas/AppointmentStatus' }
+    Finding:
+      type: object
+      required: [tooth, type]
+      properties:
+        tooth: { type: string, description: Pieza FDI permanente (11-48) o temporal (51-85) }
+        surface: { type: string, enum: [general, mesial, distal, oclusal, incisal, vestibular, lingual, palatino], default: general }
+        type: { type: string, enum: [Caries, Restauración, Endodoncia, Implante, Prótesis, Exodoncia, Sellante, Sano] }
+        notes: { type: string }
+    PerioMeasurement:
+      type: object
+      required: [tooth, site]
+      properties:
+        tooth: { type: string }
+        site: { type: string, enum: [MB, B, DB, ML, L, DL] }
+        probingDepth: { type: integer, minimum: 0, maximum: 15 }
+        gingivalMargin: { type: integer, minimum: -10, maximum: 15 }
+        attachmentLevel: { type: integer, readOnly: true, description: NIC = profundidad + margen }
+        furcation: { type: integer, minimum: 0, maximum: 3 }
+        mobility: { type: integer, minimum: 0, maximum: 3 }
+        bleeding: { type: boolean }
+        recordedAt: { type: string, readOnly: true }
+    Supply:
+      type: object
+      properties:
+        id: { type: integer }
+        sku: { type: string }
+        name: { type: string }
+        category: { type: string }
+        unit: { type: string }
+        quantity: { type: number }
+        minimum: { type: number }
+    TreatmentItem:
+      type: object
+      required: [description, amount]
+      properties:
+        id: { type: integer, readOnly: true }
+        description: { type: string }
+        tooth: { type: string }
+        phase: { type: string, default: Fase 1 }
+        amount: { type: number, minimum: 0 }
+        status: { type: string, default: Pendiente }
+    TreatmentPlan:
+      type: object
+      properties:
+        id: { type: integer }
+        patientId: { type: string }
+        patientName: { type: string }
+        title: { type: string }
+        status: { type: string }
+        totalAmount: { type: number }
+        createdAt: { type: string }
+        items: { type: array, items: { $ref: '#/components/schemas/TreatmentItem' } }
+  responses:
+    Unauthorized:
+      description: Token requerido o inválido
+    Forbidden:
+      description: Sin perfil clínico activo o el perfil no permite esta acción
+    BadRequest:
+      description: Validación de entrada fallida
+    NotFound:
+      description: Recurso no encontrado

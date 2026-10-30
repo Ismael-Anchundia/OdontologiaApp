@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
@@ -24,6 +25,8 @@ import (
 	"multicatalogo-backend/repository"
 	// Importamos nuestros controladores con inyección de dependencias
 	"multicatalogo-backend/controllers"
+	"multicatalogo-backend/database"
+	"multicatalogo-backend/integrations"
 )
 
 // func main es el punto de entrada de la aplicación en Go. Todo comienza a ejecutarse aquí.
@@ -33,6 +36,20 @@ func main() {
 		log.Fatalf("Error al inicializar la base de datos: %v", err)
 	}
 	defer config.CloseDB()
+	if err := database.Migrate(context.Background(), config.DB); err != nil {
+		log.Fatalf("Error al aplicar migraciones: %v", err)
+	}
+	if err := database.BootstrapAdmin(context.Background(), config.DB); err != nil {
+		log.Fatalf("Error al preparar el administrador: %v", err)
+	}
+	notificationCtx, stopNotifications := context.WithCancel(context.Background())
+	defer stopNotifications()
+	if sender, configured := integrations.NewWebhookSenderFromEnv(); configured {
+		go integrations.RunNotificationWorker(notificationCtx, sender)
+		log.Println("Proveedor de notificaciones configurado; cola de citas activa")
+	} else {
+		log.Println("Notificaciones en cola; configure NOTIFICATIONS_WEBHOOK_URL y NOTIFICATIONS_WEBHOOK_SECRET para entregas")
+	}
 
 	// Inicializamos la conexión a Redis
 	if err := config.InitRedis(); err != nil {
@@ -68,6 +85,19 @@ func main() {
 	if corsOrigins == "" {
 		corsOrigins = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173"
 	}
+	origins := make([]string, 0)
+	for _, origin := range strings.Split(corsOrigins, ",") {
+		origin = strings.TrimRight(strings.TrimSpace(origin), "/")
+		if origin == "" {
+			continue
+		}
+		// Render entrega solo el host del frontend; se asume HTTPS.
+		if !strings.Contains(origin, "://") {
+			origin = "https://" + origin
+		}
+		origins = append(origins, origin)
+	}
+	corsOrigins = strings.Join(origins, ",")
 	app.Use(cors.New(cors.Config{
 		// En producción se define una lista separada por comas; localmente se permiten Vite y Preview.
 		AllowOrigins: corsOrigins,
@@ -85,6 +115,7 @@ func main() {
 	go func() {
 		<-c
 		log.Println("Cerrando servidor...")
+		stopNotifications()
 		config.CloseDB()
 		config.CloseRedis()
 		app.Shutdown()

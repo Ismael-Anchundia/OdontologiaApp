@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { canAccessPage, roleLabels } from '../services/permissions';
 
 interface SidebarProps { isCollapsed: boolean; isMobileOpen: boolean; closeMobileMenu: () => void }
 const items = [
@@ -11,6 +12,7 @@ const items = [
   ['/tratamientos', 'Tratamientos', 'M5 3h14v18H5zM8 7h8m-8 4h8m-8 4h5'],
   ['/inventario', 'Inventario', 'M4 6h16v14H4zM8 6V4h8v2m-8 5h8m-8 4h8'],
   ['/reportes', 'Reportes', 'M4 19V5m0 14h17M8 16v-5m5 5V7m5 9v-4'],
+  ['/personal', 'Personal y roles', 'M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2m16-11a4 4 0 11-8 0 4 4 0 018 0m1 7h5m-2.5-2.5v5'],
 ];
 
 const Sidebar = ({ isCollapsed, isMobileOpen, closeMobileMenu }: SidebarProps) => {
@@ -18,8 +20,8 @@ const Sidebar = ({ isCollapsed, isMobileOpen, closeMobileMenu }: SidebarProps) =
   const { pathname } = useLocation();
   return <aside className={`fixed inset-y-0 left-0 z-50 flex transform flex-col bg-emerald-950 text-white transition-all duration-300 ${isMobileOpen?'translate-x-0':'-translate-x-full'} w-64 md:relative md:translate-x-0 ${isCollapsed?'md:w-20':'md:w-64'}`}>
     <div className={`border-b border-emerald-900 px-4 py-4 md:px-6 ${isCollapsed?'md:text-center':''}`}><div className="whitespace-nowrap text-xl font-bold"><span className="md:hidden">Dentalia</span><span className="hidden md:inline">{isCollapsed?'D':'Dentalia'}</span></div>{!isCollapsed&&<p className="mt-1 whitespace-nowrap text-xs font-medium tracking-wider text-emerald-200">SISTEMA ODONTOLÓGICO</p>}</div>
-    <nav className="flex-1 space-y-2 overflow-y-auto p-3">{items.map(([to,label,icon])=>{const active=to==='/'?pathname==='/':pathname.startsWith(to);return <Link key={to} to={to} onClick={closeMobileMenu} title={label} className={`flex items-center gap-3 rounded-lg p-3 transition ${active?'bg-emerald-700 text-white':'text-emerald-100 hover:bg-emerald-900'} ${isCollapsed?'md:justify-center':''}`}><svg className="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={icon}/></svg><span className={`whitespace-nowrap text-sm ${isCollapsed?'md:hidden':''}`}>{label}</span></Link>})}</nav>
-    <div className="border-t border-emerald-900 p-3 text-xs text-emerald-200">{isCollapsed?<p className="text-center uppercase">{user?.rol}</p>:<p>Sesión: <span className="font-semibold uppercase">{user?.rol==='admin'?'Administrador':user?.rol}</span></p>}</div>
+    <nav className="flex-1 space-y-2 overflow-y-auto p-3">{items.filter(([to])=>canAccessPage(user?.dentalRole,to)).map(([to,label,icon])=>{const active=to==='/'?pathname==='/':pathname.startsWith(to);return <Link key={to} to={to} onClick={closeMobileMenu} title={label} className={`flex items-center gap-3 rounded-lg p-3 transition ${active?'bg-emerald-700 text-white':'text-emerald-100 hover:bg-emerald-900'} ${isCollapsed?'md:justify-center':''}`}><svg className="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={icon}/></svg><span className={`whitespace-nowrap text-sm ${isCollapsed?'md:hidden':''}`}>{label}</span></Link>})}</nav>
+    <div className="border-t border-emerald-900 p-3 text-xs text-emerald-200">{isCollapsed?<p className="text-center uppercase">{user?.dentalRole?roleLabels[user.dentalRole].slice(0,3):''}</p>:<p>Sesión: <span className="font-semibold uppercase">{user?.dentalRole?roleLabels[user.dentalRole]:''}</span></p>}</div>
   </aside>;
 };
 export default Sidebar;

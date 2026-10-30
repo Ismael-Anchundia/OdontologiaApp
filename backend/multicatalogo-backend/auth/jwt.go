@@ -3,11 +3,28 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+const localDevelopmentSecret = "sigo-dental-local-development-key-change-before-deployment"
+
+func signingSecret() ([]byte, error) {
+	secret := os.Getenv("JWT_SECRET")
+	if (secret == "" || secret == "multicatalogo-secret-key-2026-very-secure") && os.Getenv("APP_ENV") != "production" {
+		secret = localDevelopmentSecret
+	}
+	if len(secret) < 32 || (secret == "multicatalogo-secret-key-2026-very-secure" && os.Getenv("APP_ENV") == "production") {
+		return nil, errors.New("JWT_SECRET must be at least 32 random characters and cannot be the legacy default")
+	}
+	if os.Getenv("APP_ENV") == "production" && secret == localDevelopmentSecret {
+		return nil, errors.New("JWT_SECRET must be set explicitly in production")
+	}
+	return []byte(secret), nil
+}
 
 // Claims representa los claims del JWT
 type Claims struct {
@@ -20,10 +37,9 @@ type Claims struct {
 
 // GenerateToken genera un token JWT para un usuario
 func GenerateToken(userID int, email, rol string, referidoID *int) (string, error) {
-	// Obtener JWT_SECRET del entorno
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		secret = "multicatalogo-secret-key-2026-very-secure" // Valor por defecto
+	secret, err := signingSecret()
+	if err != nil {
+		return "", err
 	}
 
 	// Obtener tiempo de expiración
@@ -50,19 +66,22 @@ func GenerateToken(userID int, email, rol string, referidoID *int) (string, erro
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(secret))
+	return token.SignedString(secret)
 }
 
 // ValidateToken valida un token JWT y retorna los claims
 func ValidateToken(tokenString string) (*Claims, error) {
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		secret = "multicatalogo-secret-key-2026-very-secure"
+	secret, err := signingSecret()
+	if err != nil {
+		return nil, fmt.Errorf("configuración JWT inválida: %w", err)
 	}
 
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		return []byte(secret), nil
-	})
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, errors.New("método de firma no permitido")
+		}
+		return secret, nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 
 	if err != nil {
 		return nil, err

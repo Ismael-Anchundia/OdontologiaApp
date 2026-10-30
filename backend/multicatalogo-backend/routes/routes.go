@@ -2,6 +2,8 @@
 package routes
 
 import (
+	"os"
+
 	// Importamos Fiber para poder recibir y configurar la instancia principal de la aplicación.
 	"github.com/gofiber/fiber/v2"
 	// Importamos nuestro paquete de controladores, donde residen las funciones que se ejecutarán en cada ruta.
@@ -15,30 +17,37 @@ func SetupRoutes(app *fiber.App, authController *controllers.AuthController, pro
 	// Definimos una ruta HTTP GET en "/api/health" para verificar el estado del servidor.
 	app.Get("/api/health", controllers.Health)
 
-	// SIGO-Dental: todas las rutas clínicas requieren sesión y rol de administrador/profesional.
-	app.Get("/api/dental/patients", middleware.RequireAuth, middleware.RequireAdmin, dentalController.ListPatients)
-	app.Post("/api/dental/patients", middleware.RequireAuth, middleware.RequireAdmin, dentalController.CreatePatient)
-	app.Put("/api/dental/patients/:patientId", middleware.RequireAuth, middleware.RequireAdmin, dentalController.UpdatePatient)
-	app.Get("/api/dental/appointments", middleware.RequireAuth, middleware.RequireAdmin, dentalController.ListAppointments)
-	app.Post("/api/dental/appointments", middleware.RequireAuth, middleware.RequireAdmin, dentalController.CreateAppointment)
-	app.Patch("/api/dental/appointments/:id/status", middleware.RequireAuth, middleware.RequireAdmin, dentalController.UpdateAppointmentStatus)
-	app.Get("/api/dental/patients/:patientId/notes", middleware.RequireAuth, middleware.RequireAdmin, dentalController.ListNotes)
-	app.Post("/api/dental/patients/:patientId/notes", middleware.RequireAuth, middleware.RequireAdmin, dentalController.CreateNote)
-	app.Get("/api/dental/patients/:patientId/odontogram", middleware.RequireAuth, middleware.RequireAdmin, dentalController.ListFindings)
-	app.Put("/api/dental/patients/:patientId/odontogram", middleware.RequireAuth, middleware.RequireAdmin, dentalController.UpsertFinding)
-	app.Get("/api/dental/patients/:patientId/periodontogram", middleware.RequireAuth, middleware.RequireAdmin, dentalController.ListPeriodontogram)
-	app.Post("/api/dental/patients/:patientId/periodontogram", middleware.RequireAuth, middleware.RequireAdmin, dentalController.RecordPeriodontalMeasurement)
-	app.Get("/api/dental/inventory", middleware.RequireAuth, middleware.RequireAdmin, dentalController.ListInventory)
-	app.Post("/api/dental/inventory", middleware.RequireAuth, middleware.RequireAdmin, dentalController.CreateInventoryItem)
-	app.Patch("/api/dental/inventory/:id", middleware.RequireAuth, middleware.RequireAdmin, dentalController.AdjustInventory)
-	app.Get("/api/dental/treatment-plans", middleware.RequireAuth, middleware.RequireAdmin, dentalController.ListTreatmentPlans)
-	app.Post("/api/dental/treatment-plans", middleware.RequireAuth, middleware.RequireAdmin, dentalController.CreateTreatmentPlan)
+	// SIGO-Dental usa perfiles propios para aplicar privilegio mínimo.
+	app.Get("/api/dental/me", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "receptionist", "dentist", "assistant", "auditor"), dentalController.DentalProfile)
+	app.Get("/api/dental/staff", middleware.RequireAuth, middleware.RequireDentalRoles("admin"), dentalController.ListStaff)
+	app.Put("/api/dental/staff/:id/role", middleware.RequireAuth, middleware.RequireDentalRoles("admin"), dentalController.UpsertStaffRole)
+	app.Get("/api/dental/patients", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "receptionist", "dentist", "assistant"), dentalController.ListPatients)
+	app.Post("/api/dental/patients", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "receptionist", "dentist"), dentalController.CreatePatient)
+	app.Put("/api/dental/patients/:patientId", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "receptionist", "dentist"), dentalController.UpdatePatient)
+	app.Get("/api/dental/appointments", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "receptionist", "dentist", "assistant"), dentalController.ListAppointments)
+	app.Post("/api/dental/appointments", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "receptionist", "dentist"), dentalController.CreateAppointment)
+	app.Patch("/api/dental/appointments/:id/status", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "receptionist", "dentist", "assistant"), dentalController.UpdateAppointmentStatus)
+	app.Get("/api/dental/patients/:patientId/notes", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "dentist", "assistant"), dentalController.ListNotes)
+	app.Post("/api/dental/patients/:patientId/notes", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "dentist", "assistant"), dentalController.CreateNote)
+	app.Get("/api/dental/patients/:patientId/odontogram", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "dentist", "assistant"), dentalController.ListFindings)
+	app.Put("/api/dental/patients/:patientId/odontogram", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "dentist", "assistant"), dentalController.UpsertFinding)
+	app.Get("/api/dental/patients/:patientId/periodontogram", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "dentist", "assistant"), dentalController.ListPeriodontogram)
+	app.Post("/api/dental/patients/:patientId/periodontogram/bulk", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "dentist", "assistant"), dentalController.RecordPeriodontalChart)
+	app.Post("/api/dental/patients/:patientId/periodontogram", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "dentist", "assistant"), dentalController.RecordPeriodontalMeasurement)
+	app.Get("/api/dental/inventory", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "assistant", "auditor"), dentalController.ListInventory)
+	app.Post("/api/dental/inventory", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "assistant"), dentalController.CreateInventoryItem)
+	app.Patch("/api/dental/inventory/:id", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "assistant"), dentalController.AdjustInventory)
+	app.Get("/api/dental/treatment-plans", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "dentist", "receptionist"), dentalController.ListTreatmentPlans)
+	app.Post("/api/dental/treatment-plans", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "dentist"), dentalController.CreateTreatmentPlan)
+	app.Patch("/api/dental/treatment-plans/:id/status", middleware.RequireAuth, middleware.RequireDentalRoles("admin", "dentist", "receptionist"), dentalController.UpdateTreatmentPlanStatus)
 
 	// Definimos una ruta HTTP POST en "/api/login" y la enlazamos al controlador con DI.
 	app.Post("/api/login", authController.Login)
 
 	// Definimos una ruta HTTP POST en "/api/register" (pública)
-	app.Post("/api/register", registerController.Register)
+	if os.Getenv("APP_ENV") != "production" || os.Getenv("ALLOW_PUBLIC_REGISTER") == "true" {
+		app.Post("/api/register", registerController.Register)
+	}
 	app.Get("/api/admin/usuarios", middleware.RequireAuth, middleware.RequireAdmin, usuariosController.Listar)
 	app.Patch("/api/admin/usuarios/:id", middleware.RequireAuth, middleware.RequireAdmin, usuariosController.Actualizar)
 

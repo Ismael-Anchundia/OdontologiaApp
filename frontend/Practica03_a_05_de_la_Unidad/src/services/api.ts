@@ -1,4 +1,6 @@
-const API_BASE = (import.meta.env.VITE_API_URL?.trim() || (import.meta.env.DEV ? "http://localhost:3000" : "")).replace(/\/+$/, "");
+const RAW_API_BASE = (import.meta.env.VITE_API_URL?.trim() || (import.meta.env.DEV ? "http://localhost:3000" : "")).replace(/\/+$/, "");
+// Render puede entregar solo el host de la API; en ese caso se usa HTTPS.
+const API_BASE = RAW_API_BASE && !/^https?:\/\//.test(RAW_API_BASE) ? `https://${RAW_API_BASE}` : RAW_API_BASE;
 const TOKEN_KEY = "sigo_dental_token";
 
 export const readToken = () => localStorage.getItem(TOKEN_KEY);

@@ -1,34 +1,26 @@
-# Adaptación de Multicatálogo a SIGO-Dental
+# Plan de adaptación SIGO-Dental
 
-## Arquitectura conservada
+Se conservó la aplicación Multicatálogo ubicada en esta carpeta para acelerar la tarea. El PDF especifica flujos/requisitos, no un stack tecnológico. La arquitectura actual es React 19 + TypeScript + Vite/Tailwind, API Go/Fiber y PostgreSQL; Render publica únicamente el modo estático de demostración.
 
-- Interfaz: React 19, TypeScript, Vite, Tailwind CSS y React Router.
-- API: Go con Fiber.
-- Persistencia: PostgreSQL; Redis continúa opcional para la API heredada.
-- Se conservó este stack para aprovechar el proyecto; el PDF propone tecnologías, pero no obliga a usar alguna.
+## Trabajo realizado
 
-## MVP local implementado
+- [x] Sustituir la navegación y módulos del catálogo por el tablero Dentalia.
+- [x] Fichas de pacientes, antecedentes médicos y alertas prioritarias.
+- [x] Agenda diaria/semanal, estados y bloqueo de solapamientos de sillón.
+- [x] Odontograma FDI y Universal con dentición temporal, superficies y categorías.
+- [x] Periodontograma de seis sitios por pieza y cálculo de NIC.
+- [x] Notas SOEP inmutables con bitácora append-only.
+- [x] Presupuestos por fases y múltiples procedimientos con seguimiento de estado global.
+- [x] Inventario, ajuste de existencias y ledger de movimientos.
+- [x] Perfiles dentales y control de acceso por ruta con denegación por defecto.
+- [x] Cola de confirmación/recordatorios con idempotencia, reintento y webhook configurable.
+- [x] Modo de demostración desconectado, PWA y configuración estática de Render.
+- [x] Documentación OpenAPI 3 inicial y matriz de correspondencia con el SRS.
 
-- [x] Reemplazar la navegación de tienda, catálogo, red y pedidos por módulos clínicos.
-- [x] Crear resumen de actividad y alertas médicas.
-- [x] Crear fichas con identificación, contacto de emergencia, tutor, seguro, antecedentes y alertas.
-- [x] Crear agenda con estados y bloqueo en PostgreSQL de solapamientos por sillón y duración.
-- [x] Crear odontograma FDI, periodontograma con NIC calculado y notas SOEP append-only.
-- [x] Crear planes de tratamiento con fases e importes.
-- [x] Crear inventario con ajustes, ledger de movimientos y aviso de stock mínimo.
-- [x] Añadir migración dental `005_dental.sql`, endpoints protegidos y registro de auditoría append-only.
-- [x] Conservar el login heredado en desarrollo y crear modo demo estático independiente.
+## Trabajo externo requerido para conformidad integral
 
-## Fase siguiente para producción clínica
+Consultar [SRS_CUMPLIMIENTO.md](SRS_CUMPLIMIENTO.md). Quedan pendientes: consentimientos y firma electrónica certificada, MFA/logout de inactividad, cobro POS, pagos mixtos, emisión electrónica SRI, comisiones dentales, aprobación granular, consumo automático por procedimiento, cifrado/backups de producción y pruebas completas de seguridad/carga/dispositivos. La ausencia de credenciales impide homologar los conectores externos.
 
-- [ ] Retirar el esquema heredado de referidos, productos y pedidos cuando deje de usarse para autenticación.
-- [ ] Implementar RBAC clínico por rol y permisos por clínica; actualmente todas las rutas dentales requieren el rol heredado `admin`.
-- [ ] Implementar MFA, cierre por inactividad y revisión de sesiones.
-- [ ] Añadir consentimiento informado, firma digital y flujo de adendas firmadas.
-- [ ] Completar presupuestos multinivel, cobros, caja y facturación electrónica local.
-- [ ] Implementar consumo de inventario por procedimiento, avisos a pacientes y proveedores externos.
-- [ ] Configurar cifrado y respaldos del PostgreSQL, secretos, TLS, observabilidad y pruebas de seguridad.
+## Comprobaciones locales
 
-## Límites actuales
-
-El modo conectado persiste los módulos dentales en PostgreSQL, pero la autenticación y tabla de usuarios siguen heredadas de Multicatálogo. No hay MFA, RBAC clínico por perfiles, cifrado del expediente ni respaldos configurados. El Blueprint estático de Render funciona como demo independiente con datos ficticios en `localStorage`. No registrar pacientes reales ni usarlo como expediente clínico.
+Se ejecutan `go test -p 1 ./...`, `npm run lint` y `npm run build`; la sección de cumplimiento registra sus resultados y las verificaciones que requieren base de datos o infraestructura. No se suben cambios ni se despliega sin instrucción del usuario.

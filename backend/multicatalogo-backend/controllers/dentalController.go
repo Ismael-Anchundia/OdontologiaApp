@@ -98,8 +98,8 @@ func (dc *DentalController) CreatePatient(c *fiber.Ctx) error {
 	}
 	req.Name = strings.TrimSpace(req.Name)
 	req.Document = strings.TrimSpace(req.Document)
-	if req.Name == "" || req.Document == "" || len(req.Name) > 255 || len(req.Document) > 32 {
-		return dentalError(c, 400, "Nombre e identificación son obligatorios")
+	if req.Name == "" || req.Document == "" || strings.TrimSpace(req.History) == "" || len(req.Name) > 255 || len(req.Document) > 32 {
+		return dentalError(c, 400, "Nombre, identificación y anamnesis son obligatorios")
 	}
 	var birth any
 	if req.Birth != "" {
@@ -158,8 +158,8 @@ func (dc *DentalController) UpdatePatient(c *fiber.Ctx) error {
 	}
 	req.Name = strings.TrimSpace(req.Name)
 	req.Document = strings.TrimSpace(req.Document)
-	if req.Name == "" || req.Document == "" || len(req.Name) > 255 || len(req.Document) > 32 {
-		return dentalError(c, 400, "Nombre e identificación son obligatorios")
+	if req.Name == "" || req.Document == "" || strings.TrimSpace(req.History) == "" || len(req.Name) > 255 || len(req.Document) > 32 {
+		return dentalError(c, 400, "Nombre, identificación y anamnesis son obligatorios")
 	}
 	var birth any
 	if req.Birth != "" {
@@ -211,12 +211,24 @@ func (dc *DentalController) ListAppointments(c *fiber.Ctx) error {
 		return dentalError(c, 401, "Sesión inválida")
 	}
 	date := strings.TrimSpace(c.Query("date"))
+	from := strings.TrimSpace(c.Query("from"))
+	to := strings.TrimSpace(c.Query("to"))
 	if date != "" {
 		if _, err := time.Parse("2006-01-02", date); err != nil {
 			return dentalError(c, 400, "Fecha inválida")
 		}
 	}
-	rows, err := config.DB.Query(`SELECT a.id,to_char(a.starts_at AT TIME ZONE 'America/Guayaquil','YYYY-MM-DD'),to_char(a.starts_at AT TIME ZONE 'America/Guayaquil','HH24:MI'),p.code,a.procedure_name,a.professional_name,ch.name,a.status FROM dental_appointments a JOIN dental_patients p ON p.id=a.patient_id JOIN dental_chairs ch ON ch.id=a.chair_id WHERE ($1='' OR (a.starts_at AT TIME ZONE 'America/Guayaquil')::date=$1::date) ORDER BY a.starts_at LIMIT 1000`, date)
+	if (from == "") != (to == "") || (date != "" && from != "") {
+		return dentalError(c, 400, "Indica una fecha o un rango completo, no ambos")
+	}
+	if from != "" {
+		start, errStart := time.Parse("2006-01-02", from)
+		end, errEnd := time.Parse("2006-01-02", to)
+		if errStart != nil || errEnd != nil || end.Before(start) || end.Sub(start) > 31*24*time.Hour {
+			return dentalError(c, 400, "Rango de fechas inválido (máximo 32 días)")
+		}
+	}
+	rows, err := config.DB.Query(`SELECT a.id,to_char(a.starts_at AT TIME ZONE 'America/Guayaquil','YYYY-MM-DD'),to_char(a.starts_at AT TIME ZONE 'America/Guayaquil','HH24:MI'),p.code,a.procedure_name,a.professional_name,ch.name,a.status FROM dental_appointments a JOIN dental_patients p ON p.id=a.patient_id JOIN dental_chairs ch ON ch.id=a.chair_id WHERE ($1::text='' OR (a.starts_at AT TIME ZONE 'America/Guayaquil')::date=NULLIF($1::text,'')::date) AND ($2::text='' OR (a.starts_at AT TIME ZONE 'America/Guayaquil')::date BETWEEN NULLIF($2::text,'')::date AND NULLIF($3::text,'')::date) ORDER BY a.starts_at LIMIT 1000`, date, from, to)
 	if err != nil {
 		return dentalError(c, 500, "No se pudieron consultar las citas")
 	}
@@ -278,7 +290,8 @@ func (dc *DentalController) CreateAppointment(c *fiber.Ctx) error {
 	}
 	defer tx.Rollback()
 	var patientPK int
-	err = tx.QueryRow(`SELECT id FROM dental_patients WHERE code=$1 AND active`, req.PatientID).Scan(&patientPK)
+	var patientName, patientPhone, patientEmail string
+	err = tx.QueryRow(`SELECT id,full_name,phone,email FROM dental_patients WHERE code=$1 AND active`, req.PatientID).Scan(&patientPK, &patientName, &patientPhone, &patientEmail)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dentalError(c, 404, "Paciente no encontrado")
 	}
@@ -300,6 +313,32 @@ func (dc *DentalController) CreateAppointment(c *fiber.Ctx) error {
 			return dentalError(c, 409, "El sillón ya tiene una cita en ese horario")
 		}
 		return dentalError(c, 500, "No se pudo agendar la cita")
+	}
+	channel, recipient := "", ""
+	if strings.TrimSpace(patientPhone) != "" {
+		channel, recipient = "whatsapp", strings.TrimSpace(patientPhone)
+	} else if strings.TrimSpace(patientEmail) != "" {
+		channel, recipient = "email", strings.TrimSpace(patientEmail)
+	}
+	if channel != "" {
+		localStart := starts.In(location)
+		entries := []struct {
+			key     string
+			at      time.Time
+			message string
+		}{
+			{"appointment_confirmation", time.Now(), fmt.Sprintf("Dentalia: cita de %s confirmada para el %s a las %s en %s.", patientName, localStart.Format("02/01/2006"), localStart.Format("15:04"), req.Chair)},
+			{"appointment_reminder_48h", localStart.Add(-48 * time.Hour), fmt.Sprintf("Dentalia: recordatorio, %s tiene una cita el %s a las %s.", patientName, localStart.Format("02/01/2006"), localStart.Format("15:04"))},
+			{"appointment_reminder_24h", localStart.Add(-24 * time.Hour), fmt.Sprintf("Dentalia: recordatorio, %s tiene una cita mañana a las %s.", patientName, localStart.Format("15:04"))},
+		}
+		for _, entry := range entries {
+			if entry.key != "appointment_confirmation" && !entry.at.After(time.Now()) {
+				continue
+			}
+			if _, err = tx.Exec(`INSERT INTO dental_notification_outbox(appointment_id,patient_id,channel,recipient,template_key,message,scheduled_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (appointment_id,template_key,channel) DO NOTHING`, appointmentID, patientPK, channel, recipient, entry.key, entry.message, entry.at); err != nil {
+				return dentalError(c, 500, "No se pudo programar la notificación de cita")
+			}
+		}
 	}
 	if err = dentalAudit(tx, c, userID, "CREATE", "appointment", strconv.FormatInt(appointmentID, 10)); err != nil {
 		return dentalError(c, 500, "No se pudo guardar la auditoría")
@@ -344,6 +383,11 @@ func (dc *DentalController) UpdateAppointmentStatus(c *fiber.Ctx) error {
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return dentalError(c, 404, "Cita no encontrada")
+	}
+	if req.Status == "Cancelada" || req.Status == "No asistió" {
+		if _, err = tx.Exec(`UPDATE dental_notification_outbox SET status='cancelled',locked_at=NULL WHERE appointment_id=$1 AND status IN ('pending','retry','needs_configuration')`, id); err != nil {
+			return dentalError(c, 500, "No se pudieron cancelar los recordatorios")
+		}
 	}
 	if err = dentalAudit(tx, c, userID, "UPDATE", "appointment", strconv.FormatInt(id, 10)); err != nil {
 		return dentalError(c, 500, "No se pudo guardar la auditoría")
@@ -498,6 +542,10 @@ func (dc *DentalController) UpsertFinding(c *fiber.Ctx) error {
 	if !validTooth {
 		return dentalError(c, 400, "Pieza dental FDI inválida")
 	}
+	validSurface := map[string]bool{"general": true, "mesial": true, "distal": true, "oclusal": true, "incisal": true, "vestibular": true, "lingual": true, "palatino": true}
+	if !validSurface[req.Surface] {
+		return dentalError(c, 400, "Superficie dental no permitida")
+	}
 	if req.Type != "Caries" && req.Type != "Restauración" && req.Type != "Endodoncia" && req.Type != "Implante" && req.Type != "Prótesis" && req.Type != "Exodoncia" && req.Type != "Sellante" && req.Type != "Sano" {
 		return dentalError(c, 400, "Tipo de hallazgo no permitido")
 	}
@@ -618,6 +666,61 @@ func (dc *DentalController) RecordPeriodontalMeasurement(c *fiber.Ctx) error {
 		return dentalError(c, 500, "No se pudo completar la medición")
 	}
 	return c.Status(201).JSON(req)
+}
+
+func (dc *DentalController) RecordPeriodontalChart(c *fiber.Ctx) error {
+	userID, ok := dentalUserID(c)
+	if !ok {
+		return dentalError(c, 401, "Sesión inválida")
+	}
+	code := c.Params("patientId")
+	var measurements []dentalPerioMeasurement
+	if err := c.BodyParser(&measurements); err != nil || len(measurements) != 6 {
+		return dentalError(c, 400, "El periodontograma debe incluir exactamente seis sitios por pieza")
+	}
+	validTooth := map[string]bool{}
+	for _, n := range []string{"11", "12", "13", "14", "15", "16", "17", "18", "21", "22", "23", "24", "25", "26", "27", "28", "31", "32", "33", "34", "35", "36", "37", "38", "41", "42", "43", "44", "45", "46", "47", "48", "51", "52", "53", "54", "55", "61", "62", "63", "64", "65", "71", "72", "73", "74", "75", "81", "82", "83", "84", "85"} {
+		validTooth[n] = true
+	}
+	validSites := map[string]bool{"MB": true, "B": true, "DB": true, "ML": true, "L": true, "DL": true}
+	seen := map[string]bool{}
+	tooth := strings.TrimSpace(measurements[0].Tooth)
+	for i := range measurements {
+		m := &measurements[i]
+		m.Tooth = strings.TrimSpace(m.Tooth)
+		m.Site = strings.ToUpper(strings.TrimSpace(m.Site))
+		if m.Tooth != tooth || !validTooth[m.Tooth] || !validSites[m.Site] || seen[m.Site] || m.ProbingDepth < 0 || m.ProbingDepth > 15 || m.GingivalMargin < -10 || m.GingivalMargin > 15 || m.Furcation < 0 || m.Furcation > 3 || m.Mobility < 0 || m.Mobility > 3 {
+			return dentalError(c, 400, "Revisa la pieza y los seis sitios periodontales")
+		}
+		seen[m.Site] = true
+	}
+	tx, err := config.DB.Begin()
+	if err != nil {
+		return dentalError(c, 500, "No se pudo guardar el periodontograma")
+	}
+	defer tx.Rollback()
+	var patientID int
+	err = tx.QueryRow(`SELECT id FROM dental_patients WHERE code=$1 AND active`, code).Scan(&patientID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return dentalError(c, 404, "Paciente no encontrado")
+	}
+	if err != nil {
+		return dentalError(c, 500, "No se pudo validar el paciente")
+	}
+	for i := range measurements {
+		m := &measurements[i]
+		err = tx.QueryRow(`INSERT INTO dental_periodontal_measurements(patient_id,tooth_number,site,probing_depth,gingival_margin,furcation,mobility,bleeding,recorded_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING attachment_level`, patientID, m.Tooth, m.Site, m.ProbingDepth, m.GingivalMargin, m.Furcation, m.Mobility, m.Bleeding, userID).Scan(&m.AttachmentLevel)
+		if err != nil {
+			return dentalError(c, 500, "No se pudo guardar el periodontograma completo")
+		}
+	}
+	if err = dentalAudit(tx, c, userID, "CREATE", "periodontal_chart", code+":"+tooth); err != nil {
+		return dentalError(c, 500, "No se pudo guardar la auditoría")
+	}
+	if err = tx.Commit(); err != nil {
+		return dentalError(c, 500, "No se pudo completar el periodontograma")
+	}
+	return c.Status(201).JSON(measurements)
 }
 
 type dentalSupply struct {
@@ -875,4 +978,129 @@ func (dc *DentalController) CreateTreatmentPlan(c *fiber.Ctx) error {
 		return dentalError(c, 500, "No se pudo guardar el plan")
 	}
 	return c.Status(201).JSON(fiber.Map{"id": planID, "patientId": req.PatientID, "title": req.Title, "status": "Pendiente", "totalAmount": total, "items": req.Items})
+}
+
+func (dc *DentalController) UpdateTreatmentPlanStatus(c *fiber.Ctx) error {
+	userID, ok := dentalUserID(c)
+	if !ok {
+		return dentalError(c, 401, "Sesión inválida")
+	}
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil || id < 1 {
+		return dentalError(c, 400, "Plan inválido")
+	}
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return dentalError(c, 400, "Estado inválido")
+	}
+	allowed := map[string]bool{"Pendiente": true, "Aprobado": true, "En progreso": true, "Completado": true, "Cancelado": true}
+	if !allowed[req.Status] {
+		return dentalError(c, 400, "Estado de plan no permitido")
+	}
+	tx, err := config.DB.Begin()
+	if err != nil {
+		return dentalError(c, 500, "No se pudo actualizar el plan")
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`UPDATE dental_treatment_plans SET status=$1 WHERE id=$2`, req.Status, id)
+	if err != nil {
+		return dentalError(c, 500, "No se pudo actualizar el plan")
+	}
+	count, _ := res.RowsAffected()
+	if count == 0 {
+		return dentalError(c, 404, "Plan no encontrado")
+	}
+	if err = dentalAudit(tx, c, userID, "UPDATE", "treatment_plan", strconv.FormatInt(id, 10)); err != nil {
+		return dentalError(c, 500, "No se pudo guardar la auditoría")
+	}
+	if err = tx.Commit(); err != nil {
+		return dentalError(c, 500, "No se pudo completar la actualización")
+	}
+	return c.JSON(fiber.Map{"id": id, "status": req.Status})
+}
+
+func (dc *DentalController) DentalProfile(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{"userId": c.Locals("user_id"), "email": c.Locals("email"), "role": c.Locals("dental_role")})
+}
+
+func (dc *DentalController) ListStaff(c *fiber.Ctx) error {
+	rows, err := config.DB.Query(`SELECT u.id,u.email,COALESCE(u.nombre,''),COALESCE(r.role,''),COALESCE(r.active,FALSE) FROM usuarios u LEFT JOIN dental_staff_roles r ON r.user_id=u.id WHERE u.activo ORDER BY u.email`)
+	if err != nil {
+		return dentalError(c, 500, "No se pudo consultar el personal clínico")
+	}
+	defer rows.Close()
+	staff := make([]fiber.Map, 0)
+	for rows.Next() {
+		var id int
+		var email, name, role string
+		var active bool
+		if err := rows.Scan(&id, &email, &name, &role, &active); err != nil {
+			return dentalError(c, 500, "No se pudo leer el personal clínico")
+		}
+		staff = append(staff, fiber.Map{"userId": id, "email": email, "name": name, "role": role, "active": active})
+	}
+	if err := rows.Err(); err != nil {
+		return dentalError(c, 500, "No se pudo leer el personal clínico")
+	}
+	return c.JSON(staff)
+}
+
+func (dc *DentalController) UpsertStaffRole(c *fiber.Ctx) error {
+	actorID, ok := dentalUserID(c)
+	if !ok {
+		return dentalError(c, 401, "Sesión inválida")
+	}
+	var req struct {
+		Role   string `json:"role"`
+		Active *bool  `json:"active"`
+	}
+	userID, err := strconv.Atoi(c.Params("id"))
+	if err := c.BodyParser(&req); err != nil || userID < 1 {
+		return dentalError(c, 400, "Usuario o perfil inválido")
+	}
+	allowed := map[string]bool{"admin": true, "receptionist": true, "dentist": true, "assistant": true, "auditor": true}
+	if !allowed[req.Role] {
+		return dentalError(c, 400, "Perfil clínico no permitido")
+	}
+	active := true
+	if req.Active != nil {
+		active = *req.Active
+	}
+	tx, err := config.DB.Begin()
+	if err != nil {
+		return dentalError(c, 500, "No se pudo iniciar la asignación de perfil")
+	}
+	defer tx.Rollback()
+	var exists bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM usuarios WHERE id=$1 AND activo)`, userID).Scan(&exists); err != nil || !exists {
+		return dentalError(c, 404, "Usuario activo no encontrado")
+	}
+	var currentRole string
+	var currentlyActive bool
+	roleErr := tx.QueryRow(`SELECT role,active FROM dental_staff_roles WHERE user_id=$1 FOR UPDATE`, userID).Scan(&currentRole, &currentlyActive)
+	if roleErr != nil && !errors.Is(roleErr, sql.ErrNoRows) {
+		return dentalError(c, 500, "No se pudo comprobar el perfil actual")
+	}
+	if currentRole == "admin" && currentlyActive && (req.Role != "admin" || !active) {
+		var activeAdmins int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM dental_staff_roles WHERE role='admin' AND active`).Scan(&activeAdmins); err != nil {
+			return dentalError(c, 500, "No se pudo comprobar la administración")
+		}
+		if activeAdmins <= 1 {
+			return dentalError(c, 409, "No se puede desactivar el último administrador clínico")
+		}
+	}
+	_, err = tx.Exec(`INSERT INTO dental_staff_roles(user_id,role,active,assigned_by,updated_at) VALUES($1,$2,$3,$4,NOW()) ON CONFLICT(user_id) DO UPDATE SET role=EXCLUDED.role,active=EXCLUDED.active,assigned_by=EXCLUDED.assigned_by,updated_at=NOW()`, userID, req.Role, active, actorID)
+	if err != nil {
+		return dentalError(c, 500, "No se pudo asignar el perfil clínico")
+	}
+	if err := dentalAudit(tx, c, actorID, "UPDATE", "staff_role", strconv.Itoa(userID)); err != nil {
+		return dentalError(c, 500, "No se pudo guardar la auditoría")
+	}
+	if err := tx.Commit(); err != nil {
+		return dentalError(c, 500, "No se pudo completar la asignación")
+	}
+	return c.JSON(fiber.Map{"userId": userID, "role": req.Role, "active": active})
 }

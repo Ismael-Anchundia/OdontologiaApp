@@ -29,7 +29,6 @@ const Catalogo = () => {
 
   useEffect(() => {
     let vigente = true;
-    setLoading(true);
     getProductos(busqueda, page, pageSize, categoria)
       .then((data) => {
         if (vigente) { setProductos(data?.data ?? []); setTotal(data?.total ?? 0); setError(''); }

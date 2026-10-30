@@ -7,14 +7,11 @@ interface BeforeInstallPromptEvent extends Event {
 
 export default function InstallPWAButton() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
-  const [isInstalled, setIsInstalled] = useState(false)
+  const [isInstalled, setIsInstalled] = useState(() => typeof window !== 'undefined' && (window.matchMedia('(display-mode: standalone)').matches
+    || ('standalone' in navigator && navigator.standalone === true)))
   const [showInstructions, setShowInstructions] = useState(false)
 
   useEffect(() => {
-    const standalone = window.matchMedia('(display-mode: standalone)').matches
-      || ('standalone' in navigator && navigator.standalone === true)
-    setIsInstalled(standalone)
-
     const handleBeforeInstallPrompt = (event: Event) => {
       event.preventDefault()
       setInstallPrompt(event as BeforeInstallPromptEvent)

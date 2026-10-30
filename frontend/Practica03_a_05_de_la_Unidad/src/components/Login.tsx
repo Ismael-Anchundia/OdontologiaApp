@@ -2,7 +2,8 @@
 import { useState, type FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth, type Rol } from "../context/AuthContext";
-import { api } from "../services/api";
+import { api, clearToken, saveToken } from "../services/api";
+import { isDentalRole } from "../services/permissions";
 import { useOnlineStatus } from "../hooks/useOnlineStatus";
 
 const Login = () => {
@@ -20,7 +21,7 @@ const Login = () => {
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (demoMode) {
-      login({ email: 'demo@dentalia.local', rol: 'admin' }, 'demo-session');
+      login({ email: 'demo@dentalia.local', rol: 'admin', dentalRole: 'admin' }, 'demo-session');
       navigate('/');
       return;
     }
@@ -36,8 +37,20 @@ const Login = () => {
         body: JSON.stringify({ email, password }),
       }, { auth: false });
       const rol: Rol = data.rol === "admin" ? "admin" : "cliente";
-      login({ email: data.email, rol, referido_id: data.referido_id }, data.token);
-      navigate(rol === "admin" ? "/" : "/tienda");
+      saveToken(data.token);
+      let profile: { role?: string };
+      try {
+        profile = await api<{ role?: string }>("/api/dental/me");
+      } catch (profileError) {
+        clearToken();
+        throw profileError;
+      }
+      if (!isDentalRole(profile.role)) {
+        clearToken();
+        throw new Error("La cuenta no tiene un perfil clínico activo.");
+      }
+      login({ email: data.email, rol, referido_id: data.referido_id, dentalRole: profile.role }, data.token);
+      navigate("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo iniciar sesión.");
     } finally {
@@ -101,7 +114,7 @@ const Login = () => {
           </button>
         </form>
 
-        {demoMode ? <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-800">Modo demostración sin servidor: usa únicamente datos ficticios. No ingreses información de pacientes.</div> : <div className="mt-6 p-4 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-600 space-y-1">
+        {demoMode ? <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-800">Modo demostración sin servidor: usa únicamente datos ficticios. No ingreses información de pacientes.</div> : import.meta.env.DEV && <div className="mt-6 p-4 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-600 space-y-1">
           <p className="font-semibold text-slate-700">Cuenta inicial heredada del proyecto:</p>
           <p>Administrador: <span className="font-mono">admin@upse.edu.ec / 123456</span></p>
           <p className="mt-2 text-amber-700">Prototipo: sustituir estas credenciales antes de desplegarlo.</p>

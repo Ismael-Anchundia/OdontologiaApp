@@ -1,0 +1,4 @@
+.env
+*.exe
+*.zip
+e2e

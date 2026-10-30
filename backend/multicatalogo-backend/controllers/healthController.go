@@ -38,11 +38,10 @@ func Health(c *fiber.Ctx) error {
 
 	// Verificar conexión a Redis
 	if config.RedisClient != nil {
+		// Redis solo lo usan módulos heredados: su caída no marca la API como degradada.
 		_, err := config.RedisClient.Ping(c.Context()).Result()
 		if err != nil {
-			response.Status = "degraded"
 			response.Redis = "down"
-			response.Message = "Redis no disponible"
 		} else {
 			response.Redis = "up"
 		}
